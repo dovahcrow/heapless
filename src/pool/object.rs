@@ -312,6 +312,17 @@ where
 {
 }
 
+impl<P, I> ops::Index<I> for Object<P>
+where
+    P: ObjectPool,
+    P::Data: ops::Index<I>,
+{
+    type Output = <P::Data as ops::Index<I>>::Output;
+    fn index(&self, idx: I) -> &Self::Output {
+        &(&**self)[idx]
+    }
+}
+
 /// An object "block" of data type `T` that has not yet been associated to an `ObjectPool`
 pub struct ObjectBlock<T> {
     node: StructNode<T>,
