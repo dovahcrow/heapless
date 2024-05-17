@@ -67,7 +67,7 @@ use core::{
     cmp::Ordering,
     fmt,
     hash::{Hash, Hasher},
-    mem::ManuallyDrop,
+    mem::{forget, ManuallyDrop},
     ops, ptr,
 };
 
@@ -175,6 +175,18 @@ where
     P: ObjectPool,
 {
     node_ptr: NonNullPtr<StructNode<P::Data>>,
+}
+
+impl<P> Object<P>
+where
+    P: ObjectPool,
+{
+    ///
+    pub fn into_inner(self) -> &'static mut ObjectBlock<P::Data> {
+        let node = unsafe { &mut *(self.node_ptr.as_ptr() as *mut _) };
+        forget(self);
+        node
+    }
 }
 
 impl<A, T, const N: usize> AsMut<[T]> for Object<A>
@@ -325,7 +337,8 @@ where
 
 /// An object "block" of data type `T` that has not yet been associated to an `ObjectPool`
 pub struct ObjectBlock<T> {
-    node: StructNode<T>,
+    ///
+    pub node: StructNode<T>,
 }
 
 impl<T> ObjectBlock<T> {
