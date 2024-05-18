@@ -81,6 +81,45 @@ use super::treiber::{AtomicPtr, NonNullPtr, Stack, StructNode};
 /// For more extensive documentation see the [module level documentation](crate::pool::object)
 #[macro_export]
 macro_rules! object_pool {
+    ($name:ident: $data_type:ty, |$arg: ident| $($reset_fn: tt)+) => {
+        pub struct $name;
+
+        impl $crate::pool::object::ObjectPool for $name {
+            type Data = $data_type;
+
+            fn singleton() -> &'static $crate::pool::object::ObjectPoolImpl<$data_type> {
+                // Even though the static variable is not exposed to user code, it is
+                // still useful to have a descriptive symbol name for debugging.
+                #[allow(non_upper_case_globals)]
+                static $name: $crate::pool::object::ObjectPoolImpl<$data_type> =
+                    $crate::pool::object::ObjectPoolImpl::new();
+
+                &$name
+            }
+
+            fn reset(value: &mut Self::Data) {
+                (|$arg: &mut $data_type| { $($reset_fn)+ }) (value);
+            }
+        }
+
+        impl $name {
+            /// Inherent method version of `ObjectPool::request`
+            #[allow(dead_code)]
+            pub fn request(&self) -> Option<$crate::pool::object::Object<$name>> {
+                <$name as $crate::pool::object::ObjectPool>::request()
+            }
+
+            /// Inherent method version of `ObjectPool::manage`
+            #[allow(dead_code)]
+            pub fn manage(
+                &self,
+                block: &'static mut $crate::pool::object::ObjectBlock<$data_type>,
+            ) {
+                <$name as $crate::pool::object::ObjectPool>::manage(block)
+            }
+        }
+    };
+
     ($name:ident: $data_type:ty) => {
         pub struct $name;
 
@@ -96,6 +135,8 @@ macro_rules! object_pool {
 
                 &$name
             }
+
+            fn reset(_: &mut Self::Data) {}
         }
 
         impl $name {
@@ -137,6 +178,9 @@ pub trait ObjectPool: Sized {
     fn manage(block: &'static mut ObjectBlock<Self::Data>) {
         Self::singleton().manage(block)
     }
+
+    ///
+    fn reset(value: &mut Self::Data);
 }
 
 /// `object_pool!` implementation detail
@@ -186,6 +230,21 @@ where
         let node = unsafe { &mut *(self.node_ptr.as_ptr() as *mut _) };
         forget(self);
         node
+    }
+}
+
+impl<P> Iterator for Object<P>
+where
+    P: ObjectPool,
+    P::Data: Iterator,
+{
+    type Item = <P::Data as Iterator>::Item;
+    fn next(&mut self) -> Option<Self::Item> {
+        (&mut **self).next()
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (&**self).size_hint()
     }
 }
 
@@ -254,6 +313,7 @@ where
     P: ObjectPool,
 {
     fn drop(&mut self) {
+        P::reset(&mut **self);
         unsafe { P::singleton().stack.push(self.node_ptr) }
     }
 }
@@ -431,7 +491,6 @@ mod tests {
     fn zst_is_well_aligned() {
         #[repr(align(4096))]
         pub struct Zst4096;
-
         object_pool!(MyObjectPool: Zst4096);
 
         let block = unsafe {
@@ -444,5 +503,39 @@ mod tests {
 
         let raw = &*object as *const Zst4096;
         assert_eq!(0, raw as usize % 4096);
+    }
+
+    #[test]
+    fn reset_worked() {
+        use crate::Vec;
+        object_pool!(NotResetPool: Vec<i32, 3>);
+
+        let block = unsafe {
+            static mut BLOCK: ObjectBlock<Vec<i32, 3>> = ObjectBlock::new(Vec::new());
+            addr_of_mut!(BLOCK).as_mut().unwrap()
+        };
+        NotResetPool.manage(block);
+
+        let mut object = NotResetPool.request().unwrap();
+        let _ = object.push(1);
+        drop(object);
+
+        let object = NotResetPool.request().unwrap();
+        assert!(!(&*object).is_empty());
+
+        object_pool!(ResetPool: Vec<i32, 3>, |v| v.clear());
+
+        let block = unsafe {
+            static mut BLOCK: ObjectBlock<Vec<i32, 3>> = ObjectBlock::new(Vec::new());
+            addr_of_mut!(BLOCK).as_mut().unwrap()
+        };
+        ResetPool.manage(block);
+
+        let mut object = ResetPool.request().unwrap();
+        let _ = object.push(1);
+        drop(object);
+
+        let object = ResetPool.request().unwrap();
+        assert!((&*object).is_empty());
     }
 }
